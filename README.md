@@ -1,67 +1,90 @@
-# thymio — constant-distance keeper
+# thymio — cruise + distance control + avoider
 
-Keep a [Thymio II](https://www.thymio.org/) robot at a **constant distance from
-the object in front of it**, using its built-in horizontal proximity sensors and
-a feedback controller on the wheel speeds.
+A [Thymio II](https://www.thymio.org/) robot that drives with a distance
+controller on its seven horizontal proximity sensors (five front, two back):
 
-This is the distance-control counterpart to the GoPiGo project
-([gopigo-sysid](https://github.com/jaspek/gopigo-sysid)): the same control idea
-— regulate one sensor reading to a setpoint with feedback — but with the ToF
-sensor replaced by the Thymio's proximity sensors.
+- **nothing in front** → cruise forward **fast**;
+- **object ahead, far** → approach it, slowing as it nears;
+- **object ahead, at the setpoint** → **stay** put;
+- **object ahead, too close** → **avoid**: back off briskly;
+- **object behind** → drive forward away from it.
+
+It steers diagonally, beeps frantically if it's boxed in front and back, and you
+can **pause/resume** it with the round center button.
+
+## Important: the sensors only see *close*
+
+Measured on the real robot, the front sensors read **0 with nothing in front**,
+then jump straight to **~1280** when an object enters a small close window, and
+climb to **~4557 right at contact**. There is **no detection at 10 cm** — the
+useful range is only a few centimetres. So this regulates distance *within that
+close window*, not at arm's length. `PROX_TARGET` is the hold reading; bigger =
+hold closer.
+
+Re-measure your own robot any time with:
+```
+.venv\Scripts\python.exe read_sensors.py
+```
+(or just press Run on `read_sensors.py` in Thonny) and set `PROX_TARGET` to the
+`fmax` you see at the distance you want.
 
 ## How it works
 
-The Thymio proximity sensors report a **larger** number when an object is
-**closer** (about `4500` at contact, dropping to `0` beyond ~12 cm). We pick a
-target reading that corresponds to the distance we want to hold:
+The wheel behaviour keys off the front reading and the setpoint:
 
 ```
-error = PROX_TARGET - measured
-  too close -> measured > target -> error < 0 -> drive backward
-  too far    -> measured < target -> error > 0 -> drive forward
+front <= DETECT                  open road -> cruise forward FAST
+front detected, below setpoint   approach, speed proportional to the gap
+front within STAY_BAND of target STAY put
+front above setpoint             too close -> AVOID (back off, stronger gain)
 ```
 
-Both wheels get the **same** speed, so the robot moves straight in or out until
-the reading — and therefore the distance — settles on the target.
-`front_proximity()` uses the closest of the five front sensors, so it works
-wherever the object sits in front of the robot.
+A rear object adds a forward push. **Diagonal steering**: the front sensors steer
+toward a lead object while cruising and diagonally away while backing off; the
+rear sensors steer the forward escape away. Wheel speeds scale together when they
+saturate, so the diagonal is never clipped. **Panic**: boxed in front and back
+for >4 s → frantic beeping. **Pause**: tap the round center button.
+
+> ⚠️ On the open road it drives forward fast on its own — give it room and mind
+> table edges the sensors can't see, or tap the center button to pause.
 
 ## Run it
 
 ### With a real Thymio
-1. Install [Thymio Suite](https://www.thymio.org/program/) and launch it, then
-   connect the Thymio (USB cable or the wireless dongle). Thymio Suite runs the
-   Thymio Device Manager (TDM) that this script talks to.
-2. Install the client library:
-   ```
-   .venv\Scripts\python.exe -m pip install tdmclient
-   ```
-3. Run:
-   ```
-   .venv\Scripts\python.exe thymio_distance.py
-   ```
-   Place an object (a hand, a box, a wall) in front of the robot; it drives to
-   the target distance and holds it. Press `Ctrl+C` to stop — the motors are
-   always set back to zero on exit.
+1. Install [Thymio Suite](https://www.thymio.org/program/) and **launch it**, then
+   connect the Thymio. Thymio Suite runs the Device Manager (TDM) the script talks
+   to — it must be open, and nothing else (another script, a VPL window) may hold
+   the robot, or you'll get a "busy" lock error.
+2. `​.venv\Scripts\python.exe -m pip install tdmclient`
+3. `​.venv\Scripts\python.exe thymio_distance.py`
+   It cruises fast, then holds a short distance off whatever it meets. **Tap the
+   center button to pause/resume;** `Ctrl+C` stops it (motors zeroed on exit).
+
+### Calibrate the sensors
+```
+.venv\Scripts\python.exe read_sensors.py
+```
 
 ### Without a robot (offline test)
 ```
 .venv\Scripts\python.exe thymio_distance.py --sim
 ```
-Simulates a robot starting 30 cm from a wall and prints how the gap, the
-proximity reading and the wheel command evolve until it settles on the target.
 
 ## Tuning
 
-All knobs are constants at the top of [`thymio_distance.py`](thymio_distance.py):
-
-| Constant      | Meaning                                                        |
-|---------------|----------------------------------------------------------------|
-| `PROX_TARGET` | the distance to hold (bigger = sit closer to the object)       |
-| `DEADBAND`    | how close to the target counts as "good enough" (anti-jitter)  |
-| `MAX_SPEED`   | wheel-speed clamp                                              |
-| `KP/KI/KD`    | feedback gains — start with plain P, add `KD` if it overshoots |
+| Constant        | Meaning                                                       |
+|-----------------|---------------------------------------------------------------|
+| `PROX_TARGET`   | hold reading (bigger = hold closer; lower toward ~1400 = stop as soon as detected, i.e. farthest) |
+| `DETECT`        | below this = nothing in front → cruise                        |
+| `STAY_BAND`     | half-width of the "stay" zone (wider = steadier, looser hold) |
+| `CRUISE_SPEED`  | open-road forward speed                                       |
+| `MAX_SPEED`     | wheel-speed clamp                                            |
+| `KP`            | approach gain                                                 |
+| `KP_AVOID`      | too-close gain — how briskly it backs off                     |
+| `KT` / `TURN_DEADBAND` | diagonal steering strength / dead-zone                 |
+| `ALARM_AFTER` / `BEEP_EVERY` | panic delay / beep cadence                       |
 
 ## Files
-- `thymio_distance.py` — the controller (and the `--sim` offline test)
+- `thymio_distance.py` — the controller (plus `--sim` mode)
+- `read_sensors.py` — live sensor monitor for calibration
 - `.venv/` — local virtual environment (not tracked)
